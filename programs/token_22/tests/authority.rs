@@ -318,7 +318,12 @@ fn a_permanent_delegate_moves_tokens_without_consent() {
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: instruction::CreateSeizableMint { decimals: DECIMALS }.data(),
+            data: instruction::CreateSeizableMint {
+                decimals: DECIMALS,
+                basis_points: 0,
+                maximum_fee: 0,
+            }
+            .data(),
         }],
         &[&mint],
     );

@@ -1,10 +1,21 @@
-use anchor_lang::prelude::*;
+use anchor_spl::token_interface::spl_token_2022::extension::ExtensionType;
+pub const BASE_EXTENSIONS: &[ExtensionType] = &[
+    ExtensionType::MintCloseAuthority,
+    ExtensionType::MetadataPointer,
+    ExtensionType::TransferFeeConfig,
+    ExtensionType::DefaultAccountState,
+];
 
-#[constant]
-pub const COUNTER_SEED: &[u8] = b"counter";
+pub const CONFIDENTIAL_EXTENSIONS: &[ExtensionType] = &[
+    ExtensionType::MintCloseAuthority,
+    ExtensionType::MetadataPointer,
+    ExtensionType::TransferFeeConfig,
+    ExtensionType::DefaultAccountState,
+    ExtensionType::PermanentDelegate,
+    ExtensionType::ConfidentialTransferMint,
+    ExtensionType::ConfidentialTransferFeeConfig,
+];
 
-#[constant]
-pub const HELLO_WORLD_LAMPORTS: u64 = 1;
+pub const AE_CIPHERTEXT_LEN: usize = 36;
 
-#[constant]
-pub const MAX_COUNT: u64 = 10;
+pub const EL_GAMAL_CIPHERTEXT_LEN: usize = 64;

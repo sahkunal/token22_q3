@@ -7,7 +7,11 @@ use anchor_lang::{
 };
 use litesvm::LiteSVM;
 use proofext::instruction::ProofLocation;
-use proofgen::{transfer::transfer_split_proof_data, transfer_with_fee::transfer_with_fee_split_proof_data ,withdraw::withdraw_proof_data};
+use proofgen::{
+    transfer::transfer_split_proof_data,
+    transfer_with_fee::transfer_with_fee_split_proof_data,
+    withdraw::withdraw_proof_data,
+};
 use solana_keypair::Keypair;
 use solana_message::Message;
 use solana_signer::Signer;
@@ -18,11 +22,15 @@ use token_22::{accounts, instruction, ID};
 use token_22new::{
     extension::{
         confidential_transfer::{instruction as ct_ix, ConfidentialTransferAccount},
-        confidential_transfer_fee::{instruction::{disable_harvest_to_mint, enable_harvest_to_mint},ConfidentialTransferFeeAmount, ConfidentialTransferFeeConfig},
+        confidential_transfer_fee::{
+            instruction::{disable_harvest_to_mint, enable_harvest_to_mint},
+            ConfidentialTransferFeeAmount,
+            ConfidentialTransferFeeConfig,
+        },
         BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     instruction::{initialize_account3, mint_to},
-    state::{Account as TokenAccountState, Mint as MintState}
+    state::{Account as TokenAccountState, Mint as MintState},
 };
 use zk::{
     encryption::{
@@ -127,7 +135,7 @@ fn stage1_configure_account() {
         &TOKEN_2022_PROGRAM_ID,
         &ta.pubkey(),
         &mint.pubkey(),
-        &aes.encrypt(0).into(),
+        &bytemuck::pod_read_unaligned(&aes.encrypt(0).to_bytes()),
         65536,
         &payer.pubkey(),
         &[],
@@ -187,7 +195,7 @@ fn create_and_configure(
         &TOKEN_2022_PROGRAM_ID,
         &ta.pubkey(),
         mint,
-        &aes.encrypt(0).into(),
+        &bytemuck::pod_read_unaligned(&aes.encrypt(0).to_bytes()),
         65536,
         &owner.pubkey(),
         &[],
@@ -213,13 +221,13 @@ fn read_ct(svm: &LiteSVM, account: &Pubkey) -> ConfidentialTransferAccount {
 }
 
 fn available_balance(ct: &ConfidentialTransferAccount, elgamal: &ElGamalKeypair) -> u64 {
-    let ciphertext: ElGamalCiphertext = ct.available_balance.try_into().unwrap();
+    let ciphertext = ElGamalCiphertext::from_bytes(&ct.available_balance.to_bytes()).unwrap();
     elgamal.secret().decrypt_u32(&ciphertext).unwrap()
 }
 
 fn pending_balance(ct: &ConfidentialTransferAccount, elgamal: &ElGamalKeypair) -> u64 {
-    let lo: ElGamalCiphertext = ct.pending_balance_lo.try_into().unwrap();
-    let hi: ElGamalCiphertext = ct.pending_balance_hi.try_into().unwrap();
+    let lo = ElGamalCiphertext::from_bytes(&ct.pending_balance_lo.to_bytes()).unwrap();
+    let hi = ElGamalCiphertext::from_bytes(&ct.pending_balance_hi.to_bytes()).unwrap();
     let lo = elgamal.secret().decrypt_u32(&lo).unwrap();
     let hi = elgamal.secret().decrypt_u32(&hi).unwrap();
     lo + (hi << 16)
@@ -407,14 +415,14 @@ fn full_confidential_lifecycle() {
 
     let transfer_amount = 2_500u64;
     let ct = read_ct(&svm, &alice.account);
-    let current_available: ElGamalCiphertext = ct.available_balance.try_into().unwrap();
-    let current_decryptable: AeCiphertext = ct.decryptable_available_balance.try_into().unwrap();
+    let current_available = ElGamalCiphertext::from_bytes(&ct.available_balance.to_bytes()).unwrap();
+    let current_decryptable = AeCiphertext::from_bytes(&ct.decryptable_available_balance.to_bytes());
     let bob_ct = read_ct(&svm, &bob.account);
-    let bob_pubkey: ElGamalPubkey = bob_ct.elgamal_pubkey.try_into().unwrap();
+    let bob_pubkey = ElGamalPubkey::from_bytes(&bob_ct.elgamal_pubkey.to_bytes());
 
     let proofs = transfer_split_proof_data(
         &current_available,
-        &current_decryptable,
+        current_decryptable.as_ref().unwrap(),
         transfer_amount,
         &alice.elgamal,
         &alice.aes,
@@ -747,7 +755,7 @@ fn a_holder_on_a_fee_mint_carries_its_own_withheld_balance() {
         &TOKEN_2022_PROGRAM_ID,
         &ta.pubkey(),
         &mint.pubkey(),
-        &aes.encrypt(0).into(),
+        &bytemuck::pod_read_unaligned(&aes.encrypt(0).to_bytes()),
         65536,
         &payer.pubkey(),
         &[],

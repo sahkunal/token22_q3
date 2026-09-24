@@ -1,8 +1,12 @@
 [package]
 name = "token_22"
 version = "0.1.0"
-description = "Created with Anchor"
+description = "Remittance stablecoin on Token-2022: fees, KYC-gated freeze, self-describing metadata, seizure authority, confidential transfers"
 edition = "2021"
+license = "Apache-2.0"
+readme = "../../README.md"
+repository = "https://github.com/sahkunal/token22_q3"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -13,20 +17,26 @@ default = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build",
-             "anchor-spl/idl-build", 
-                ]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
 
-
 [dependencies]
 anchor-lang = "1.2.0"
 anchor-spl = { version = "1.2.0", features = ["token_2022", "token_2022_extensions"] }
-
-
-
+# Declared directly so lib.rs can `use spl_token_metadata_interface::...` to write
+# on-chain name/symbol/uri after InitializeMint. anchor-spl's `token_2022_extensions`
+# feature already pulls this crate in transitively at a compatible version; pin the
+# version to match what `cargo tree` resolves for you if this drifts.
+spl-token-metadata-interface = "1.0"
+# `ProofLocation` is only imported *privately* inside
+# `spl_token_2022::extension::confidential_transfer::instruction`, so any
+# caller outside that crate (that's us) has to name the type via its own
+# origin crate, not via `confidential_instruction::ProofLocation`. Needed as
+# a real (non-dev) dependency because instructions/confidential.rs uses it
+# in program code, not just tests.
+proofext = { package = "spl-token-confidential-transfer-proof-extraction", version = "0.6" }
 
 [dev-dependencies]
 litesvm = "0.16.0"
@@ -40,7 +50,6 @@ solana-compute-budget-interface = "3"
 zk = { package = "solana-zk-sdk", version = "7" }
 token_22new = { package = "spl-token-2022-interface", version = "3.1" }
 proofgen = { package = "spl-token-confidential-transfer-proof-generation", version = "0.6" }
-proofext = { package = "spl-token-confidential-transfer-proof-extraction", version = "0.6" }
 zkif = { package = "solana-zk-elgamal-proof-interface", version = "0.1" }
 bytemuck = "1"
 
