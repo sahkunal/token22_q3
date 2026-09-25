@@ -245,18 +245,12 @@ fn remittance_mint_carries_all_four_extensions() {
     );
     assert_eq!(u64::from(fee_config.newer_transfer_fee.maximum_fee), MAXIMUM_FEE);
 
-    // The bug from the earlier draft: MetadataPointer must point at the
-    // MINT ITSELF, not at the payer.
     let metadata_pointer = state.get_extension::<MetadataPointer>().unwrap();
     assert_eq!(
         Option::<Pubkey>::from(metadata_pointer.metadata_address),
         Some(mint.pubkey())
     );
 }
-
-// ---------------------------------------------------------------------
-// Task 4 — new accounts start frozen; thaw is separate from mint state
-// ---------------------------------------------------------------------
 
 #[test]
 fn new_accounts_are_frozen_until_thawed() {
@@ -287,19 +281,12 @@ fn new_accounts_are_frozen_until_thawed() {
         "expected a frozen-account failure:\n{logs}"
     );
 
-    // The freeze authority (payer, set at InitializeMint2) thaws it.
     send(&mut svm, &payer, &[thaw_ix(&holder, &mint.pubkey(), &payer.pubkey())], &[]);
     let (_, state) = read_account_state(&svm, &holder);
     assert_eq!(state, AccountState::Initialized);
-
-    // `other` is untouched — thaw only ever affects the one account named.
     let (_, other_state) = read_account_state(&svm, &other);
     assert_eq!(other_state, AccountState::Frozen);
 }
-
-// ---------------------------------------------------------------------
-// Task 2 — transfer_checked_with_fee, fee computed live
-// ---------------------------------------------------------------------
 
 #[test]
 fn transfer_with_fee_withholds_the_correct_amount() {
@@ -352,10 +339,6 @@ fn transfer_with_fee_withholds_the_correct_amount() {
     assert_eq!(receiver_balance, amount - expected_fee);
     println!("transferred {amount}, fee withheld {expected_fee}");
 }
-
-// ---------------------------------------------------------------------
-// Task 3 — StateWithExtensions-only reads; allowlist behaviour
-// ---------------------------------------------------------------------
 
 #[test]
 fn validation_accepts_the_remittance_mint() {

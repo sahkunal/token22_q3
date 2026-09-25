@@ -1,7 +1,3 @@
-//! Task 5: the re-issued mint (base extensions + PermanentDelegate +
-//! confidential transfers, manual approval) and the seizure path against
-//! the public balance.
-
 use anchor_lang::{
     prelude::Pubkey,
     solana_program::{instruction::Instruction, system_program},
@@ -80,9 +76,6 @@ fn read_balance(svm: &LiteSVM, addr: &Pubkey) -> u64 {
 
 fn create_v2_mint(svm: &mut LiteSVM, payer: &Keypair) -> Keypair {
     let mint = Keypair::new();
-    // A throwaway 32-byte value stands in for a real ElGamal pubkey here —
-    // fine for exercising the seize path, which never touches confidential
-    // state at all (see the gap analysis in reissue_mint.rs).
     let withdraw_withheld_authority_elgamal_pubkey = [7u8; 32];
 
     send(
@@ -141,7 +134,6 @@ fn v2_mint_carries_the_full_seven_extension_stack() {
         Some(payer.pubkey())
     );
 
-    // approve_policy = manual: auto_approve_new_accounts must be false.
     let ct_mint = state.get_extension::<ConfidentialTransferMint>().unwrap();
     assert!(!bool::from(ct_mint.auto_approve_new_accounts));
 }
@@ -157,10 +149,6 @@ fn a_permanent_delegate_moves_public_balance_without_consent() {
     let victim_account = plain_account(&mut svm, &payer, &mint.pubkey(), &victim.pubkey());
     let attacker_account = plain_account(&mut svm, &payer, &mint.pubkey(), &payer.pubkey());
 
-    // The v2 mint carries DefaultAccountState(Frozen) forward from the base
-    // extension set, so both fresh accounts start frozen — thaw them (task
-    // 4's path) before minting/transferring, exactly as a real KYC flow
-    // would after clearing each holder.
     let thaw = |account: Pubkey| Instruction {
         program_id: ID,
         accounts: accounts::ThawAfterKyc {
@@ -192,8 +180,6 @@ fn a_permanent_delegate_moves_public_balance_without_consent() {
 
     assert_eq!(read_balance(&svm, &victim_account), 1_000);
 
-    // The victim never signs this transaction — that's the entire point of
-    // a permanent delegate.
     send(
         &mut svm,
         &payer,

@@ -172,12 +172,6 @@ struct Holder {
     aes: AeKey,
 }
 
-/// Opens a token account, thaws it (the v2 mint defaults new accounts to
-/// frozen), then runs ConfigureAccount through the PROGRAM's own
-/// instruction — not `ct_ix::configure_account` directly — staging the
-/// pubkey-validity proof into a context account first, since
-/// `configure_confidential_account` expects `ProofLocation::
-/// ContextStateAccount` rather than `InstructionOffset`.
 fn create_and_configure(
     svm: &mut LiteSVM,
     payer: &Keypair,
@@ -263,9 +257,7 @@ fn pending_balance(ct: &ConfidentialTransferAccount, elgamal: &ElGamalKeypair) -
     lo + (hi << 16)
 }
 
-/// Unchanged from your original test: DepositConfidentialTokens and
-/// ApplyPendingBalance already existed as program instructions before this
-/// scaffold, with exactly this account/argument shape.
+
 fn deposit(svm: &mut LiteSVM, payer: &Keypair, mint: Pubkey, holder: &Holder, amount: u64) {
     send(
         svm,
@@ -345,7 +337,6 @@ fn full_confidential_lifecycle_through_the_program() {
     let alice_available = available_balance(&read_ct(&svm, &alice.account), &alice.elgamal);
     assert_eq!(alice_available, 10_000);
 
-    // ---- confidential Transfer, through our own program instruction ----
     let transfer_amount = 2_500u64;
     let ct = read_ct(&svm, &alice.account);
     let current_available: ElGamalCiphertext = ct.available_balance.try_into().unwrap();
@@ -430,9 +421,6 @@ fn full_confidential_lifecycle_through_the_program() {
     let bob_ct = read_ct(&svm, &bob.account);
     assert_eq!(available_balance(&bob_ct, &bob.elgamal), transfer_amount);
 
-    // ---- WithdrawConfidentialTokens, through our own program instruction,
-    //      after ApplyPendingBalance (enforced on-chain — see task 3/6 in
-    //      confidential.rs) ----
     let withdraw_amount = 1_000u64;
     let bob_ct = read_ct(&svm, &bob.account);
     let bob_available = available_balance(&bob_ct, &bob.elgamal);
@@ -519,9 +507,7 @@ fn withdraw_is_refused_if_pending_balance_was_never_applied() {
         .unwrap()],
         &[],
     );
-    // Deposit lands in PENDING balance and is never applied — the
-    // program's on-chain check in `withdraw_confidential` must refuse a
-    // withdrawal here rather than silently ignore the pending credit.
+
     deposit(&mut svm, &payer, mint.pubkey(), &alice, 5_000);
 
     let ct = read_ct(&svm, &alice.account);
