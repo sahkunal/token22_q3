@@ -1,19 +1,16 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke;
 use anchor_spl::token_interface::{spl_token_2022, TokenInterface};
+use proofext::instruction::ProofLocation;
 use spl_token_2022::extension::{
-    confidential_transfer::{
-        instruction as confidential_instruction,
-        ConfidentialTransferAccount,
-        DecryptableBalance,
-    },
-    confidential_transfer::ProofLocation,
+    confidential_transfer::{instruction as confidential_instruction, ConfidentialTransferAccount, DecryptableBalance},
     BaseStateWithExtensions, StateWithExtensions,
 };
 use spl_token_2022::state::Account as TokenAccountState;
 
 use crate::constants::{AE_CIPHERTEXT_LEN, EL_GAMAL_CIPHERTEXT_LEN};
 use crate::errors::RemittanceError;
+
 pub fn configure_confidential_account(
     ctx: Context<ConfigureConfidentialAccount>,
     decryptable_zero_balance: [u8; AE_CIPHERTEXT_LEN],
@@ -97,7 +94,6 @@ pub struct DepositConfidential<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
-
 pub fn apply_pending_balance(
     ctx: Context<ApplyPendingBalance>,
     expected_pending_balance_credit_counter: u64,
@@ -132,6 +128,7 @@ pub struct ApplyPendingBalance<'info> {
     pub authority: Signer<'info>,
     pub token_program: Interface<'info, TokenInterface>,
 }
+
 
 pub fn confidential_transfer(
     ctx: Context<ConfidentialTransfer>,
@@ -187,11 +184,9 @@ pub struct ConfidentialTransfer<'info> {
     pub authority: Signer<'info>,
 
     /// CHECK: pre-staged context-state account holding the
-    /// ciphertext-commitment equality proof for this transfer.
     pub equality_proof_context: UncheckedAccount<'info>,
 
     /// CHECK: pre-staged context-state account holding the batched
-    /// ciphertext-validity proof.
     pub ciphertext_validity_proof_context: UncheckedAccount<'info>,
 
     /// CHECK: pre-staged context-state account holding the batched range

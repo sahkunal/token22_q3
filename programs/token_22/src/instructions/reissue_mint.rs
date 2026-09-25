@@ -149,7 +149,7 @@ pub fn create_remittance_mint_v2(
             symbol,
             uri,
         ),
-        &[mint_info, ctx.accounts.payer.to_account_info(), program_info],
+        &[mint_info.clone(), ctx.accounts.payer.to_account_info(), program_info],
     )?;
 
     msg!(

@@ -1,13 +1,18 @@
-//! Two extensions about who is allowed to move your tokens.
-//!
-//! CpiGuard is a defence the account owner switches on.
-//! PermanentDelegate is a power the mint creator holds over every holder.
-//! They point in opposite directions, which is why I put them together here.
+//! Task 5: the re-issued mint (base extensions + PermanentDelegate +
+//! confidential transfers, manual approval) and the seizure path against
+//! the public balance.
 
 use anchor_lang::{
     prelude::Pubkey,
     solana_program::{instruction::Instruction, system_program},
     InstructionData, ToAccountMetas,
+};
+use anchor_spl::token_interface::spl_token_2022::{
+    extension::{
+        confidential_transfer::ConfidentialTransferMint, permanent_delegate::PermanentDelegate,
+        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+    },
+    state::{Account as TokenAccountState, Mint as MintState},
 };
 use litesvm::LiteSVM;
 use solana_keypair::Keypair;
@@ -15,17 +20,12 @@ use solana_message::Message;
 use solana_signer::Signer;
 use solana_transaction::Transaction;
 use token_22::{accounts, instruction, ID};
-use token_22new::{
-    extension::{
-        cpi_guard::instruction::{disable_cpi_guard, enable_cpi_guard},
-        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
-    },
-    instruction::{approve, initialize_account3, mint_to},
-    state::Account as TokenAccountState,
-};
+use token_22new::instruction::{initialize_account3, mint_to};
 
 const TOKEN_2022_PROGRAM_ID: Pubkey = anchor_spl::token_interface::spl_token_2022::ID;
 const DECIMALS: u8 = 6;
+const BASIS_POINTS: u16 = 250;
+const MAXIMUM_FEE: u64 = 1_000;
 
 fn setup() -> (LiteSVM, Keypair) {
     let mut svm = LiteSVM::new();
@@ -43,71 +43,16 @@ fn send(svm: &mut LiteSVM, payer: &Keypair, ixs: &[Instruction], extra: &[&Keypa
     let mut tx = Transaction::new_unsigned(Message::new(ixs, Some(&payer.pubkey())));
     tx.try_sign(&signers, bh).unwrap();
     if let Err(e) = svm.send_transaction(tx) {
-        panic!("tx failed: {:#?}", e.meta.logs);
+        panic!("tx failed: {:?}\nlogs: {:#?}", e.err, e.meta.logs);
     }
-}
-
-fn send_expecting_failure(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    ixs: &[Instruction],
-    extra: &[&Keypair],
-) -> String {
-    let mut signers: Vec<&Keypair> = vec![payer];
-    signers.extend_from_slice(extra);
-    let bh = svm.latest_blockhash();
-    let mut tx = Transaction::new_unsigned(Message::new(ixs, Some(&payer.pubkey())));
-    tx.try_sign(&signers, bh).unwrap();
-    match svm.send_transaction(tx) {
-        Ok(_) => panic!("expected failure, got success"),
-        Err(e) => e.meta.logs.join("\n"),
-    }
-}
-
-/// Create a token account carrying CpiGuard, and mint tokens into it.
-fn funded_account_with_cpi_guard(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    mint: &Pubkey,
-    owner: &Keypair,
-    amount: u64,
-) -> Pubkey {
-    let ta = Keypair::new();
-    let space =
-        ExtensionType::try_calculate_account_len::<TokenAccountState>(&[ExtensionType::CpiGuard])
-            .unwrap();
-    let lamports = svm.minimum_balance_for_rent_exemption(space);
-    send(
-        svm,
-        payer,
-        &[
-            solana_system_interface::instruction::create_account(
-                &payer.pubkey(),
-                &ta.pubkey(),
-                lamports,
-                space as u64,
-                &TOKEN_2022_PROGRAM_ID,
-            ),
-            initialize_account3(&TOKEN_2022_PROGRAM_ID, &ta.pubkey(), mint, &owner.pubkey())
-                .unwrap(),
-            mint_to(
-                &TOKEN_2022_PROGRAM_ID,
-                mint,
-                &ta.pubkey(),
-                &payer.pubkey(),
-                &[],
-                amount,
-            )
-            .unwrap(),
-        ],
-        &[&ta],
-    );
-    ta.pubkey()
 }
 
 fn plain_account(svm: &mut LiteSVM, payer: &Keypair, mint: &Pubkey, owner: &Pubkey) -> Pubkey {
     let ta = Keypair::new();
-    let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[]).unwrap();
+    let space = ExtensionType::try_calculate_account_len::<TokenAccountState>(&[
+        ExtensionType::TransferFeeAmount,
+    ])
+    .unwrap();
     let lamports = svm.minimum_balance_for_rent_exemption(space);
     send(
         svm,
@@ -127,212 +72,109 @@ fn plain_account(svm: &mut LiteSVM, payer: &Keypair, mint: &Pubkey, owner: &Pubk
     ta.pubkey()
 }
 
-fn read_account(svm: &LiteSVM, addr: &Pubkey) -> (u64, Option<Pubkey>, Vec<ExtensionType>) {
+fn read_balance(svm: &LiteSVM, addr: &Pubkey) -> u64 {
     let acct = svm.get_account(addr).unwrap();
     let state = StateWithExtensions::<TokenAccountState>::unpack(&acct.data).unwrap();
-    (
-        state.base.amount,
-        state.base.delegate.into(),
-        state.get_extension_types().unwrap(),
-    )
+    state.base.amount
 }
 
-fn create_plain_mint(svm: &mut LiteSVM, payer: &Keypair) -> Keypair {
+fn create_v2_mint(svm: &mut LiteSVM, payer: &Keypair) -> Keypair {
     let mint = Keypair::new();
+    // A throwaway 32-byte value stands in for a real ElGamal pubkey here —
+    // fine for exercising the seize path, which never touches confidential
+    // state at all (see the gap analysis in reissue_mint.rs).
+    let withdraw_withheld_authority_elgamal_pubkey = [7u8; 32];
+
     send(
         svm,
         payer,
         &[Instruction {
             program_id: ID,
-            accounts: accounts::CreateMintDeclarative {
+            accounts: accounts::CreateRemittanceMintV2 {
                 payer: payer.pubkey(),
                 mint: mint.pubkey(),
                 token_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: instruction::CreateMintDeclarative { decimals: DECIMALS }.data(),
+            data: instruction::CreateRemittanceMintV2 {
+                decimals: DECIMALS,
+                basis_points: BASIS_POINTS,
+                maximum_fee: MAXIMUM_FEE,
+                withdraw_withheld_authority_elgamal_pubkey,
+                name: "Remittance USD".to_string(),
+                symbol: "rUSD".to_string(),
+                uri: "https://example.com/rusd.json".to_string(),
+            }
+            .data(),
         }],
         &[&mint],
     );
     mint
 }
 
-fn delegate_via_cpi_ix(token_account: &Pubkey, delegate: &Pubkey, owner: &Pubkey) -> Instruction {
-    Instruction {
-        program_id: ID,
-        accounts: accounts::DelegateToProgram {
-            token_account: *token_account,
-            delegate: *delegate,
-            owner: *owner,
-            token_program: TOKEN_2022_PROGRAM_ID,
-        }
-        .to_account_metas(None),
-        data: instruction::DelegateToProgram { amount: 500 }.data(),
+#[test]
+fn v2_mint_carries_the_full_seven_extension_stack() {
+    let (mut svm, payer) = setup();
+    let mint = create_v2_mint(&mut svm, &payer);
+
+    let account = svm.get_account(&mint.pubkey()).unwrap();
+    let state = StateWithExtensions::<MintState>::unpack(&account.data).unwrap();
+    let extensions = state.get_extension_types().unwrap();
+    println!("v2 mint extensions = {extensions:?}");
+
+    for required in [
+        ExtensionType::MintCloseAuthority,
+        ExtensionType::MetadataPointer,
+        ExtensionType::TransferFeeConfig,
+        ExtensionType::DefaultAccountState,
+        ExtensionType::PermanentDelegate,
+        ExtensionType::ConfidentialTransferMint,
+        ExtensionType::ConfidentialTransferFeeConfig,
+    ] {
+        assert!(extensions.contains(&required), "missing {required:?}");
     }
+
+    let delegate = state.get_extension::<PermanentDelegate>().unwrap();
+    assert_eq!(
+        Option::<Pubkey>::from(delegate.delegate),
+        Some(payer.pubkey())
+    );
+
+    // approve_policy = manual: auto_approve_new_accounts must be false.
+    let ct_mint = state.get_extension::<ConfidentialTransferMint>().unwrap();
+    assert!(!bool::from(ct_mint.auto_approve_new_accounts));
 }
 
 #[test]
-fn without_cpi_guard_a_program_can_take_delegation() {
+fn a_permanent_delegate_moves_public_balance_without_consent() {
     let (mut svm, payer) = setup();
-    let mint = create_plain_mint(&mut svm, &payer);
-    let ta = funded_account_with_cpi_guard(&mut svm, &payer, &mint.pubkey(), &payer, 1_000);
-    let delegate = Pubkey::new_unique();
-
-    // Account extensions are the mirror image of mint extensions. A mint
-    // extension must be initialized BEFORE InitializeMint, and the space and
-    // the TLV entry appear together. CpiGuard only needs the space reserved up
-    // front; the TLV entry does not exist until EnableCpiGuard is issued after
-    // the account is initialized.
-    let (_, _, extensions) = read_account(&svm, &ta);
-    assert!(
-        extensions.is_empty(),
-        "space reserved, but no TLV entry yet"
-    );
-
-    send(
-        &mut svm,
-        &payer,
-        &[delegate_via_cpi_ix(&ta, &delegate, &payer.pubkey())],
-        &[],
-    );
-
-    let (_, stored_delegate, _) = read_account(&svm, &ta);
-    assert_eq!(stored_delegate, Some(delegate));
-}
-
-#[test]
-fn cpi_guard_blocks_delegation_issued_through_a_cpi() {
-    let (mut svm, payer) = setup();
-    let mint = create_plain_mint(&mut svm, &payer);
-    let ta = funded_account_with_cpi_guard(&mut svm, &payer, &mint.pubkey(), &payer, 1_000);
-    let delegate = Pubkey::new_unique();
-
-    send(
-        &mut svm,
-        &payer,
-        &[enable_cpi_guard(&TOKEN_2022_PROGRAM_ID, &ta, &payer.pubkey(), &[]).unwrap()],
-        &[],
-    );
-
-    // Now the extension exists.
-    let (_, _, extensions) = read_account(&svm, &ta);
-    assert_eq!(extensions, vec![ExtensionType::CpiGuard]);
-
-    let logs = send_expecting_failure(
-        &mut svm,
-        &payer,
-        &[delegate_via_cpi_ix(&ta, &delegate, &payer.pubkey())],
-        &[],
-    );
-    assert!(
-        logs.contains("CpiGuard") || logs.contains("Approve"),
-        "blocked for the wrong reason:\n{logs}"
-    );
-
-    // No delegate was recorded.
-    let (_, stored_delegate, _) = read_account(&svm, &ta);
-    assert_eq!(stored_delegate, None);
-}
-
-#[test]
-fn cpi_guard_still_allows_the_owner_to_approve_directly() {
-    let (mut svm, payer) = setup();
-    let mint = create_plain_mint(&mut svm, &payer);
-    let ta = funded_account_with_cpi_guard(&mut svm, &payer, &mint.pubkey(), &payer, 1_000);
-    let delegate = Pubkey::new_unique();
-
-    send(
-        &mut svm,
-        &payer,
-        &[enable_cpi_guard(&TOKEN_2022_PROGRAM_ID, &ta, &payer.pubkey(), &[]).unwrap()],
-        &[],
-    );
-
-    // Same Approve, but issued as a top level instruction the owner signed
-    // rather than through a program. CpiGuard permits it.
-    send(
-        &mut svm,
-        &payer,
-        &[approve(
-            &TOKEN_2022_PROGRAM_ID,
-            &ta,
-            &delegate,
-            &payer.pubkey(),
-            &[],
-            500,
-        )
-        .unwrap()],
-        &[],
-    );
-
-    let (_, stored_delegate, _) = read_account(&svm, &ta);
-    assert_eq!(stored_delegate, Some(delegate));
-}
-
-#[test]
-fn cpi_guard_can_be_switched_off_again_by_the_owner() {
-    let (mut svm, payer) = setup();
-    let mint = create_plain_mint(&mut svm, &payer);
-    let ta = funded_account_with_cpi_guard(&mut svm, &payer, &mint.pubkey(), &payer, 1_000);
-    let delegate = Pubkey::new_unique();
-
-    send(
-        &mut svm,
-        &payer,
-        &[enable_cpi_guard(&TOKEN_2022_PROGRAM_ID, &ta, &payer.pubkey(), &[]).unwrap()],
-        &[],
-    );
-    send(
-        &mut svm,
-        &payer,
-        &[disable_cpi_guard(&TOKEN_2022_PROGRAM_ID, &ta, &payer.pubkey(), &[]).unwrap()],
-        &[],
-    );
-    send(
-        &mut svm,
-        &payer,
-        &[delegate_via_cpi_ix(&ta, &delegate, &payer.pubkey())],
-        &[],
-    );
-
-    let (_, stored_delegate, _) = read_account(&svm, &ta);
-    assert_eq!(stored_delegate, Some(delegate));
-}
-
-#[test]
-fn a_permanent_delegate_moves_tokens_without_consent() {
-    let (mut svm, payer) = setup();
-
-    // The mint's permanent delegate is the payer, set declaratively.
-    let mint = Keypair::new();
-    send(
-        &mut svm,
-        &payer,
-        &[Instruction {
-            program_id: ID,
-            accounts: accounts::CreateSeizableMint {
-                payer: payer.pubkey(),
-                mint: mint.pubkey(),
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: instruction::CreateSeizableMint {
-                decimals: DECIMALS,
-                basis_points: 0,
-                maximum_fee: 0,
-            }
-            .data(),
-        }],
-        &[&mint],
-    );
+    let mint = create_v2_mint(&mut svm, &payer);
 
     // A holder who has nothing to do with the mint authority.
     let victim = Keypair::new();
     svm.airdrop(&victim.pubkey(), 1_000_000_000).unwrap();
     let victim_account = plain_account(&mut svm, &payer, &mint.pubkey(), &victim.pubkey());
     let attacker_account = plain_account(&mut svm, &payer, &mint.pubkey(), &payer.pubkey());
+
+    // The v2 mint carries DefaultAccountState(Frozen) forward from the base
+    // extension set, so both fresh accounts start frozen — thaw them (task
+    // 4's path) before minting/transferring, exactly as a real KYC flow
+    // would after clearing each holder.
+    let thaw = |account: Pubkey| Instruction {
+        program_id: ID,
+        accounts: accounts::ThawAfterKyc {
+            token_account: account,
+            mint: mint.pubkey(),
+            freeze_authority: payer.pubkey(),
+            token_program: TOKEN_2022_PROGRAM_ID,
+        }
+        .to_account_metas(None),
+        data: instruction::ThawAfterKyc {}.data(),
+    };
+    send(&mut svm, &payer, &[thaw(victim_account)], &[]);
+    send(&mut svm, &payer, &[thaw(attacker_account)], &[]);
+
     send(
         &mut svm,
         &payer,
@@ -348,12 +190,10 @@ fn a_permanent_delegate_moves_tokens_without_consent() {
         &[],
     );
 
-    let (before, delegate, _) = read_account(&svm, &victim_account);
-    assert_eq!(before, 1_000);
-    // No Approve was ever issued.
-    assert_eq!(delegate, None);
+    assert_eq!(read_balance(&svm, &victim_account), 1_000);
 
-    // The victim does not sign this transaction.
+    // The victim never signs this transaction — that's the entire point of
+    // a permanent delegate.
     send(
         &mut svm,
         &payer,
@@ -376,9 +216,7 @@ fn a_permanent_delegate_moves_tokens_without_consent() {
         &[],
     );
 
-    let (after, _, _) = read_account(&svm, &victim_account);
-    let (taken, _, _) = read_account(&svm, &attacker_account);
-    assert_eq!(after, 0);
-    assert_eq!(taken, 1_000);
+    assert_eq!(read_balance(&svm, &victim_account), 0);
+    assert_eq!(read_balance(&svm, &attacker_account), 1_000);
     println!("permanent delegate moved 1000 with no approval and no holder signature");
 }

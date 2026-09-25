@@ -14,6 +14,10 @@ use spl_token_2022::{
 
 use crate::constants::BASE_EXTENSIONS;
 
+/// Task 1 — mint stacking TransferFeeConfig, MetadataPointer (pointed at
+/// the mint itself), DefaultAccountState(Frozen), and MintCloseAuthority,
+/// sized via `ExtensionType::try_calculate_account_len`, with every
+/// extension-init instruction ordered before InitializeMint.
 pub fn create_remittance_mint(
     ctx: Context<CreateRemittanceMint>,
     decimals: u8,
@@ -39,6 +43,7 @@ pub fn create_remittance_mint(
         &ctx.accounts.token_program.key(),
     )?;
 
+    // --- every extension-init instruction, in order, BEFORE InitializeMint2 ---
 
     mint_close_authority_initialize(
         CpiContext::new(
@@ -51,6 +56,9 @@ pub fn create_remittance_mint(
         Some(&ctx.accounts.payer.key()),
     )?;
 
+    // MetadataPointer points at the MINT ITSELF, not an off-chain/third
+    // party account — this is what lets a wallet trust the metadata without
+    // a registry lookup.
     invoke(
         &metadata_pointer_instruction::initialize(
             &ctx.accounts.token_program.key(),
@@ -78,7 +86,8 @@ pub fn create_remittance_mint(
         maximum_fee,
     )?;
 
-
+    // New accounts for this mint start FROZEN until KYC clears — pairs with
+    // the thaw instruction in `instructions::kyc`.
     invoke(
         &default_account_state_instruction::initialize_default_account_state(
             &ctx.accounts.token_program.key(),
@@ -120,6 +129,21 @@ pub fn create_remittance_mint(
             ctx.accounts.token_program.to_account_info(),
         ],
     )?;
+      let required_lamports = Rent::get()?.minimum_balance(ctx.accounts.mint.data_len());
+    let current_lamports = ctx.accounts.mint.lamports();
+    if required_lamports > current_lamports {
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            required_lamports - current_lamports,
+        )?;
+    }
+
 
     msg!(
         "remittance mint {} created, {} bytes, {} bps fee, frozen-by-default",
